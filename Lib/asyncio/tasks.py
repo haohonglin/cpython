@@ -264,6 +264,9 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
         else:
             blocking = getattr(result, '_asyncio_future_blocking', None)
             if blocking is not None:
+                # 如果result包含_asyncio_future_blocking变量，那么result是一个Future对象， 
+                # 通过判断result._asyncio_future_blocking是否为True来表明这个Future
+                # 对象有没有被挂起
                 # Yielded Future must come from Future.__iter__().
                 if futures._get_loop(result) is not self._loop:
                     new_exc = RuntimeError(
@@ -279,13 +282,18 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
                             self.__step, new_exc, context=self._context)
                     else:
                         result._asyncio_future_blocking = False
+                        # future add done callback 什么时候执行
                         result.add_done_callback(
                             self.__wakeup, context=self._context)
+                        # _fut_waiter是什么意思
                         self._fut_waiter = result
                         if self._must_cancel:
                             if self._fut_waiter.cancel():
                                 self._must_cancel = False
                 else:
+                    # future 不是 blocking状态说明什么问题? 调用的是yield 而不是 yield from
+                    # yield 和 yield from 在程序上处理有什么不同，为什么yield from 会调用future.__iter__,
+                    # 而 yield却不会??
                     new_exc = RuntimeError(
                         f'yield was used instead of yield from '
                         f'in task {self!r} with {result!r}')
@@ -294,6 +302,7 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
 
             elif result is None:
                 # Bare yield relinquishes control for one event loop iteration.
+                # 最简单的yield表达式，让改future下次继续运行
                 self._loop.call_soon(self.__step, context=self._context)
             elif inspect.isgenerator(result):
                 # Yielding a generator is just wrong.
@@ -324,6 +333,9 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
             # Python eval loop would use `.send(value)` method call,
             # instead of `__next__()`, which is slower for futures
             # that return non-generator iterators from their `__iter__`.
+            #
+            # latter future 运行后产生的值是怎么输出给former future ???
+            # loop 只怎么控制这里面值的传递的
             self.__step()
         self = None  # Needed to break cycles when an exception occurs.
 

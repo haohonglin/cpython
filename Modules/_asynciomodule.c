@@ -339,6 +339,7 @@ get_event_loop(void)
 }
 
 
+/* loop call func soon, return handle*/
 static int
 call_soon(PyObject *loop, PyObject *func, PyObject *arg, PyContext *ctx)
 {
@@ -2602,6 +2603,7 @@ task_step_impl(TaskObj *task, PyObject *exc)
         return NULL;
     }
 
+    // 实际的上层的执行逻辑
     if (exc == NULL) {
         if (PyGen_CheckExact(coro) || PyCoro_CheckExact(coro)) {
             result = _PyGen_Send((PyGenObject*)coro, Py_None);
@@ -2791,6 +2793,7 @@ set_exception:
                 }
 
                 /* result.add_done_callback(task._wakeup) */
+		// 开始执行future add_done_callback, 封装执行上下文，最后调用FastCall执行
                 PyObject *add_cb = _PyObject_GetAttrId(
                     result, &PyId_add_done_callback);
                 if (add_cb == NULL) {

@@ -19,7 +19,7 @@ static char *ASYNC_GEN_IGNORED_EXIT_MSG =
 static inline int
 exc_state_traverse(_PyErr_StackItem *exc_state, visitproc visit, void *arg)
 {
-    Py_VISIT(exc_state->exc_type);
+    cd(exc_state->exc_type);
     Py_VISIT(exc_state->exc_value);
     Py_VISIT(exc_state->exc_traceback);
     return 0;
@@ -148,14 +148,18 @@ gen_dealloc(PyGenObject *gen)
     PyObject_GC_Del(gen);
 }
 
+// 信号传输，如何实现
 static PyObject *
 gen_send_ex(PyGenObject *gen, PyObject *arg, int exc, int closing)
 {
+    // exc, closing
+    // 这个到底是个什么样的数据结构， 在代码运行中扮演什么样的角色???
     PyThreadState *tstate = PyThreadState_GET();
     PyFrameObject *f = gen->gi_frame;
     PyObject *result;
 
     if (gen->gi_running) {
+        // 如何去区分generator和coroutine，两个分别是在什么时候创建的
         const char *msg = "generator already executing";
         if (PyCoro_CheckExact(gen)) {
             msg = "coroutine already executing";
@@ -189,6 +193,7 @@ gen_send_ex(PyGenObject *gen, PyObject *arg, int exc, int closing)
     }
 
     if (f->f_lasti == -1) {
+        // 未启动的generator
         if (arg && arg != Py_None) {
             const char *msg = "can't send non-None value to a "
                               "just-started generator";
@@ -204,6 +209,7 @@ gen_send_ex(PyGenObject *gen, PyObject *arg, int exc, int closing)
         }
     } else {
         /* Push arg onto the frame's value stack */
+        // 将值压到Gen对象的堆，这个值什么时候会被使用?
         result = arg ? arg : Py_None;
         Py_INCREF(result);
         *(f->f_stacktop++) = result;
@@ -213,12 +219,18 @@ gen_send_ex(PyGenObject *gen, PyObject *arg, int exc, int closing)
      * necessarily their creator. */
     Py_XINCREF(tstate->frame);
     assert(f->f_back == NULL);
+    // 这代码是什么？主动让出控制权，回到最近调用的地方????
     f->f_back = tstate->frame;
 
     gen->gi_running = 1;
+    // 切换当前线程的运行上下文，保留现场
     gen->gi_exc_state.previous_item = tstate->exc_info;
     tstate->exc_info = &gen->gi_exc_state;
+
+    // 执行代码， f frame里面会有新的coroutine 和 generator gen_send_ex, 需要进一步研究PyEval_EvalFrameEx
     result = PyEval_EvalFrameEx(f, exc);
+
+    // 恢复现场
     tstate->exc_info = gen->gi_exc_state.previous_item;
     gen->gi_exc_state.previous_item = NULL;
     gen->gi_running = 0;
@@ -269,6 +281,7 @@ gen_send_ex(PyGenObject *gen, PyObject *arg, int exc, int closing)
         _PyErr_FormatFromCause(PyExc_RuntimeError, "%s", msg);
     }
 
+    // 这个地方没有整明白
     if (!result || f->f_stacktop == NULL) {
         /* generator can't be rerun, so release the frame */
         /* first clean reference cycle through stored exception traceback */
@@ -312,6 +325,7 @@ gen_close_iter(PyObject *yf)
     }
     else {
         PyObject *meth;
+        // 隐形递归
         if (_PyObject_LookupAttrId(yf, &PyId_close, &meth) < 0) {
             PyErr_WriteUnraisable(yf);
         }
@@ -326,6 +340,7 @@ gen_close_iter(PyObject *yf)
     return 0;
 }
 
+// 需要搞清楚_PyGen_yf和gen_send_ex的关系
 PyObject *
 _PyGen_yf(PyGenObject *gen)
 {
@@ -344,8 +359,10 @@ _PyGen_yf(PyGenObject *gen)
             return NULL;
         }
 
+        // magic code
         if (code[f->f_lasti + sizeof(_Py_CODEUNIT)] != YIELD_FROM)
             return NULL;
+        // stacktop出栈， gen.send的时候压栈， gen.yield 出栈
         yf = f->f_stacktop[-1];
         Py_INCREF(yf);
     }
@@ -423,11 +440,13 @@ _gen_throw(PyGenObject *gen, int close_on_genexit,
             gen->gi_running = 1;
             /* Close the generator that we are currently iterating with
                'yield from' or awaiting on with 'await'. */
+            // 递归调用
             ret = _gen_throw((PyGenObject *)yf, close_on_genexit,
                              typ, val, tb);
             gen->gi_running = 0;
         } else {
             /* `yf` is an iterator or a coroutine-like object. */
+            // throw的最终执行代码
             PyObject *meth;
             if (_PyObject_LookupAttrId(yf, &PyId_throw, &meth) < 0) {
                 Py_DECREF(yf);
@@ -438,6 +457,7 @@ _gen_throw(PyGenObject *gen, int close_on_genexit,
                 goto throw_here;
             }
             gen->gi_running = 1;
+            // 最终的执行单元
             ret = PyObject_CallFunctionObjArgs(meth, typ, val, tb, NULL);
             gen->gi_running = 0;
             Py_DECREF(meth);
@@ -451,6 +471,7 @@ _gen_throw(PyGenObject *gen, int close_on_genexit,
             Py_DECREF(ret);
             /* Termination repetition of YIELD_FROM */
             assert(gen->gi_frame->f_lasti >= 0);
+            // 当前代码指针
             gen->gi_frame->f_lasti += sizeof(_Py_CODEUNIT);
             if (_PyGen_FetchStopIterationValue(&val) == 0) {
                 ret = gen_send_ex(gen, val, 0, 0);
@@ -1275,6 +1296,7 @@ async_gen_init_hooks(PyAsyncGenObject *o)
         o->ag_finalizer = finalizer;
     }
 
+    // 获取第一个执行的async gen
     firstiter = tstate->async_gen_firstiter;
     if (firstiter) {
         PyObject *res;
@@ -1651,6 +1673,7 @@ static PyObject *
 async_gen_asend_new(PyAsyncGenObject *gen, PyObject *sendval)
 {
     PyAsyncGenASend *o;
+    // 这个队列是干什么用的
     if (ag_asend_freelist_free) {
         ag_asend_freelist_free--;
         o = ag_asend_freelist[ag_asend_freelist_free];

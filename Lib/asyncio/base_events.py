@@ -354,8 +354,12 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._timer_cancelled_count = 0
         self._closed = False
         self._stopping = False
+
+        # 已经继续的Handle, 
         self._ready = collections.deque()
+        # 等待调度的Handle, 通过运行时间由近到远调度, 里面都是TimeHandle对象
         self._scheduled = []
+
         self._default_executor = None
         self._internal_fds = 0
         # Identifier of the thread running the event loop, or None if the
@@ -374,6 +378,7 @@ class BaseEventLoop(events.AbstractEventLoop):
 
         # A weak set of all asynchronous generators that are
         # being iterated by the loop.
+        # 这个容器是干什么用的
         self._asyncgens = weakref.WeakSet()
         # Set to True when `loop.shutdown_asyncgens` is called.
         self._asyncgens_shutdown_called = False
@@ -529,6 +534,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._thread_id = threading.get_ident()
 
         old_agen_hooks = sys.get_asyncgen_hooks()
+        # 这里为什么要设置async generator hooks ????
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter_hook,
                                finalizer=self._asyncgen_finalizer_hook)
         try:
@@ -1688,6 +1694,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         'call_later' callbacks.
         """
 
+        # _scheduled
         sched_count = len(self._scheduled)
         if (sched_count > _MIN_SCHEDULED_TIMER_HANDLES and
             self._timer_cancelled_count / sched_count >
@@ -1712,6 +1719,7 @@ class BaseEventLoop(events.AbstractEventLoop):
                 handle._scheduled = False
 
         timeout = None
+        # _ready ????
         if self._ready or self._stopping:
             timeout = 0
         elif self._scheduled:
@@ -1741,9 +1749,11 @@ class BaseEventLoop(events.AbstractEventLoop):
                            timeout * 1e3, dt * 1e3)
         else:
             event_list = self._selector.select(timeout)
+        # ????
         self._process_events(event_list)
 
         # Handle 'later' callbacks that are ready.
+        # ??? endtime
         end_time = self.time() + self._clock_resolution
         while self._scheduled:
             handle = self._scheduled[0]
@@ -1753,6 +1763,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             handle._scheduled = False
             self._ready.append(handle)
 
+        # COMMENT TODO
         # This is the only place where callbacks are actually *called*.
         # All other places just add them to ready.
         # Note: We run all currently scheduled callbacks, but not any
